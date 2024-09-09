@@ -1,63 +1,10 @@
 # Emission_Model_Waste-HN2024
 
-################################ Subiendo los datos reales de residuos #######################################################################################
-
-##### Code Residuos ########
-
-
 ## Cargar librerías necesarias
 library(readxl)
 library(dplyr)
 library(ggplot2)
-
-# Datos específicos para Honduras de acuerdo al informe del INE
-indice_generacion_rsu_dia <- 0.65  # kg/hab/día   # https://ine.gob.hn/v4/2022/12/15/gestion-integral-de-los-residuos-solidos-en-honduras/#:~:text=Estudios%20indican%20que%20la%20generaci%C3%B3n,%2Fpor%20persona%2Fal%20d%C3%ADa.
-indice_generacion_rsu_anual <- indice_generacion_rsu_dia * 365  # Convertir a kg/hab/año
-
-fraccion_residuos_organicos <- 0.44  # Fuente ajustada según los datos disponibles
-
-fraccion_residuos_vertederos <- 0.599  # Fuente: "Informe de la Evaluación Regional del Manejo de Residuos Sólidos Urbanos en ALC 2010"
-
-# Calcular el DOC para Honduras
-DOC <- indice_generacion_rsu_anual * fraccion_residuos_organicos * fraccion_residuos_vertederos
-print(paste("Valor calculado de DOC para Honduras:", DOC, "kg/hab/año"))
-
-# Convertir el DOC a toneladas por habitante por año
-DOC_ton <- DOC / 1000
-
-# Función para calcular k usando un modelo de ajuste
-calcular_k <- function(data) {
-  if (any(is.na(data$DDOC)) || any(is.infinite(data$DDOC))) {
-    stop("Datos contienen valores faltantes o infinitos.")
-  }
-  modelo <- nls(DDOC ~ DDOC0 * exp(-k * (ANO - min(ANO))), data = data, start = list(DDOC0 = max(data$DDOC, na.rm = TRUE), k = 0.1))
-  abs(coef(modelo)["k"])  # Tomar el valor absoluto de k
-}
-
-# Cargar el archivo con los datos de DDOC (CH4e + CO2e) desde la hoja "Residuos"
-file_path <- "C:/Users/DEES-JULIO/Desktop/GIZ/Anexo 1. Consolidado INGEI 2005-2020.xlsx"
-data <- read_excel(file_path, sheet = "Residuos")
-
-# Seleccionar solo las columnas relevantes y renombrarlas
-data <- data %>%
-  select(ANO, DDOC, E_IeIAD, E_EDS, E_TAR) %>%
-  filter(!is.na(DDOC))
-
-# Calcular el valor de k usando los datos proporcionados
-k_calculado <- calcular_k(data)
-
-# Verificar el valor de k
-print(paste("Valor calculado de k:", k_calculado))
-
-# Proyectar las trayectorias de emisiones usando el valor de k calculado
-years <- 2000:2050
-
-
-# Parámetros iniciales
-P0 <- 6.75e6  # Población en el año 2000 (en millones)
-r <- 0.015    # Tasa de crecimiento demográfico anual
-G <- indice_generacion_rsu_dia     # Generación de residuos per cápita (kg/hab/día)
-dias_anio <- 365  # Número de días en un año
+library(tidyr)
 
 # Función para calcular la población en un año dado
 calcular_poblacion <- function(t, P0, r) {
@@ -71,410 +18,223 @@ calcular_residuos <- function(t, P0, r, G, dias_anio) {
   return(residuos)
 }
 
-# Ejemplo: Calcular la cantidad de residuos generados entre 2000 y 2050
-years <- 2000:2050
-residuos_generados <- sapply(years, calcular_residuos, P0 = P0, r = r, G = G, dias_anio = dias_anio)
-
-  
-  
-Waste_Deposited_Tons <- residuos_generados  # Ajustar a un crecimiento más moderado
-DOCf <- rep(DOC_ton, length(years))  # Es la fracción del carbono organico degradable
-MCF <- runif(length(years), 0.4, 0.7) # Methane Correction Factor **** Tengo muchas dudas aquí,  Leí el capitulo 6 de tratamiento y eliminación de aguas residuales
-Recovered_CH4_Tons <- seq(-10, length.out = length(years)) # Cantidad de metano (CH4) capturada y recuperada en toneladas 
-OX <- runif(length(years), 0.1, 0.25) # Oxidation Factor
-
-# Variables para nuevas tecnologías
-FBT <- 0.30  # Fracción de residuos tratados biológicamente 
-EBT <- 0.30  # Eficiencia de reducción del tratamiento biológico  
-FI <- 0.10   # Fracción de residuos incinerados 
-CO2I <- 2.0  # Emisiones de CO2 de la incineración (toneladas de CO2 por tonelada de residuos) 2.0
-
-# Calcular las variables derivadas
-DDOCmd <- Waste_Deposited_Tons * DOCf * MCF # cantidad de Carbono Orgánico Degradable
-
-# Inicializar variables para las emisiones
-DDOCma <- numeric(length(years)) #Es la masa de carbono orgánico degradable depositado en el año i 
-DDOCmdecomp <- numeric(length(years)) #Es la cantidad de Carbono Orgánico Degradable que se descompone en un año específico
-CH4_generated <- numeric(length(years))
-CH4_emitted <- numeric(length(years))
-
-# Computar el modelo año por año usando el k calculado
-for (i in 1:length(years)) {
-  if (i == 1) {
-    DDOCma[i] <- DDOCmd[i]
-    DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k_calculado * (years[i] - years[1])))
-  } else {
-    DDOCma[i] <- DDOCmd[i] + DDOCma[i - 1] * exp(-k_calculado * (years[i] - years[i - 1]))
-    DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k_calculado * (years[i] - years[i - 1]))) + DDOCma[i - 1] * (1 - exp(-k_calculado * (years[i] - years[i - 1])))
-  }
-  CH4_generated[i] <- DDOCmdecomp[i] * 16/12
-  CH4_emitted[i] <- (CH4_generated[i] - Recovered_CH4_Tons[i]) * (1 - OX[i])
-  
-  if (CH4_emitted[i] < 0) {
-    CH4_emitted[i] <- 0
-  }
-}
-
-# Ajustar las emisiones para las nuevas tecnologías
-CH4_emitted_adjusted <- CH4_emitted * (1 - (FBT * EBT))  # Ajuste por tratamiento biológico
-
-# Definir fracciones de destino de residuos Fuente: "Informe de la Evaluación Regional del Manejo de Residuos Sólidos Urbanos en ALC 2010"
-fraccion_relleno_sanitario <- 0.113  
-fraccion_vertedero_controlado <- 0.599  
-fraccion_vertedero_cielo_abierto <- 0.15
-fraccion_quema_cielo_abierto <- 0.138  
-fraccion_otras_formas <- 0
-
-# Ajustar las emisiones según el destino
-CH4_emitted_relleno_sanitario <- CH4_emitted_adjusted * fraccion_relleno_sanitario
-CH4_emitted_vertedero_controlado <- CH4_emitted_adjusted * fraccion_vertedero_controlado
-CH4_emitted_vertedero_cielo_abierto <- CH4_emitted_adjusted * fraccion_vertedero_cielo_abierto
-CH4_emitted_quema_cielo_abierto <- CH4_emitted_adjusted * fraccion_quema_cielo_abierto
-CH4_emitted_otras_formas <- CH4_emitted_adjusted * fraccion_otras_formas
-
-# Calcular las emisiones totales ajustadas
-CH4_emitted_total <- CH4_emitted_relleno_sanitario + CH4_emitted_vertedero_controlado + CH4_emitted_vertedero_cielo_abierto + CH4_emitted_quema_cielo_abierto + CH4_emitted_otras_formas
-
-# Calcular las fracciones de emisiones de cada tecnología
-fraction_solid_waste <- 0.09 # Hay que validarlo
-fraction_incineration <- 0.15 # Hay que validarlo
-fraction_wastewater <- 1 - (fraction_solid_waste + fraction_incineration)
-
-# Emisiones de CO2, CH4 y N2O por tecnología
-CO2_emissions_incineration <- Waste_Deposited_Tons * CO2I * fraction_incineration
-
-# CH4e total
-CH4e_total <- CH4_emitted_total * fraction_wastewater + CH4_emitted_total * fraction_solid_waste
-
-# N2Oe total (asumiendo factores de emisión específicos para incineración y tratamiento de aguas)
-N2O_emission_factor_incineration <- 0.1  # Emisiones de N2O por tonelada incinerada
-N2O_emission_factor_wastewater <- 0.05   # Emisiones de N2O por tonelada tratada de aguas residuales
-
-N2O_emissions_incineration <- Waste_Deposited_Tons * N2O_emission_factor_incineration * fraction_incineration
-N2O_emissions_wastewater <- Waste_Deposited_Tons * N2O_emission_factor_wastewater * fraction_wastewater
-
-N2Oe_total <- N2O_emissions_incineration + N2O_emissions_wastewater
-
-BAU <- CH4e_total + N2Oe_total
-
-# Crear un dataframe con los resultados
-data_proyectada <- data.frame(
-  Year = years,
-  Waste_Deposited_Tons = Waste_Deposited_Tons,
-  DOC = DOCf,
-  MCF = MCF,
-  k = k_calculado,
-  Recovered_CH4_Tons = Recovered_CH4_Tons,
-  OX = OX,
-  CO2_Emissions_Incineration = CO2_emissions_incineration,
-  N2O_Emissions_Incineration = N2O_emissions_incineration,
-  N2O_Emissions_Wastewater = N2O_emissions_wastewater,
-  Total_CH4e = CH4e_total,
-  Total_N2Oe = N2Oe_total,
-  BAU = BAU
-)
-
-# Definir factores de reducción para diferentes tecnologías, comenzando en 2025
-reduction_factor_biogas <- 0.9
-reduction_factor_lagunas <- 0.9
-reduction_factor_lodos <- 0.9
-otro_factor <- 0.9
-
-ambicioso <- reduction_factor_biogas + reduction_factor_lagunas + reduction_factor_lodos + otro_factor
-moderado <- reduction_factor_biogas
-
-# Ajustar las proyecciones de emisiones
-data_proyectada <- data_proyectada %>%
-  mutate(
-    CH4_Emissions_Ambicioso = ifelse(Year >= 2025, 
-                                     CH4e_total * (1 - ambicioso * (Year - 2025) / (2050 - 2025)), 
-                                     CH4e_total),
-    CH4_Emissions_Moderado = ifelse(Year >= 2025, 
-                                    CH4e_total * (1 - moderado * (Year - 2025) / (2050 - 2025)), 
-                                    CH4e_total)
-  )
-
-# Calcular las emisiones totales ajustadas para los escenarios
-data_proyectada <- data_proyectada %>%
-  mutate(
-    Total_Emissions_BAU = CO2_Emissions_Incineration + CH4e_total + N2O_Emissions_Incineration + N2O_Emissions_Wastewater,
-    Total_Emissions_Ambicioso = CO2_Emissions_Incineration + CH4_Emissions_Ambicioso + N2O_Emissions_Incineration + N2O_Emissions_Wastewater,
-    Total_Emissions_Moderado = CO2_Emissions_Incineration + CH4_Emissions_Moderado + N2O_Emissions_Incineration + N2O_Emissions_Wastewater
-  )
-
-# Visualizar los resultados ajustados
-ggplot(data_proyectada, aes(x = Year)) +
-  geom_line(aes(y = Total_Emissions_BAU, color = "Emisiones Totales BAU"), size = 1) +
-  geom_line(aes(y = Total_Emissions_Ambicioso, color = "Emisiones Totales Ambicioso"), size = 1, linetype = "dashed") +
-  geom_line(aes(y = Total_Emissions_Moderado, color = "Emisiones Totales Moderado"), size = 1, linetype = "dotted") +
-  labs(title = "Trayectorias de Emisión de Gases de Efecto Invernadero en la Gestión de Residuos (2000-2050)",
-       x = "Año",
-       y = "Toneladas de CO2e Emitidas",
-       color = "Escenarios") +
-  theme_minimal() +
-  scale_color_manual(values = c("Emisiones Totales BAU" = "red", 
-                                "Emisiones Totales Ambicioso" = "blue",
-                                "Emisiones Totales Moderado" = "green"))
-
-  
-
-
-
-
-
-# ################ Modulo de coste-beneficio #######################################################
-
-# Definir los costos y beneficios (ejemplo en Lempiras)
-costo_biogas <- 200000  # Costo de implementar biogás
-costo_lagunas <- 150000  # Costo de implementar lagunas
-costo_lodos <- 50000  # Costo de implementar gestión de lodos
-
-beneficio_emisiones_reducidas <- function(emisiones_reducidas, precio_carbono) {
-  return(emisiones_reducidas * precio_carbono)
-}
-
-precio_carbono <- 1500 # Precio del carbono en Lempiras por tonelada
-
-# Calcular las emisiones reducidas para cada escenario
-emisiones_reducidas_moderado <- data_proyectada$Total_Emissions_BAU - data_proyectada$Total_Emissions_Moderado
-emisiones_reducidas_ambicioso <- data_proyectada$Total_Emissions_BAU - data_proyectada$Total_Emissions_Ambicioso
-
-# Calcular los beneficios de las emisiones reducidas
-beneficios_moderado <- beneficio_emisiones_reducidas(emisiones_reducidas_moderado, precio_carbono)
-beneficios_ambicioso <- beneficio_emisiones_reducidas(emisiones_reducidas_ambicioso, precio_carbono)
-
-# Crear un vector de costos que sean cero antes del 2025
-costos_moderado <- rep(0, length(years))
-costos_ambicioso <- rep(0, length(years))
-
-costos_moderado[years >= 2025] <- costo_biogas + costo_lagunas + costo_lodos
-costos_ambicioso[years >= 2025] <- costo_biogas + costo_lagunas + costo_lodos
-
-# Calcular los beneficios netos
-beneficio_neto_moderado <- beneficios_moderado - costos_moderado
-beneficio_neto_ambicioso <- beneficios_ambicioso - costos_ambicioso
-
-# Agregar los resultados al data frame de trayectorias
-data_proyectada <- data_proyectada %>%
-  mutate(
-    Beneficio_Neto_Moderado = beneficio_neto_moderado,
-    Beneficio_Neto_Ambicioso = beneficio_neto_ambicioso
-  )
-
-# Visualizar los resultados de coste-beneficio
-ggplot(data_proyectada, aes(x = Year)) +
-  geom_line(aes(y = Beneficio_Neto_Moderado, color = "Beneficio Neto Moderado"), size = 1) +
-  geom_line(aes(y = Beneficio_Neto_Ambicioso, color = "Beneficio Neto Ambicioso"), size = 1, linetype = "dashed") +
-  labs(title = "Análisis de Coste-Beneficio en la Gestión de Residuos",
-       x = "Año",
-       y = "Beneficio Neto (Lempiras)",
-       color = "Escenarios") +
-  theme_minimal() +
-  scale_y_continuous(labels = scales::comma) +
-  scale_color_manual(values = c("Beneficio Neto Moderado" = "green", 
-                                "Beneficio Neto Ambicioso" = "blue"))
-
-
-
-
-
-
-
-
-##############################################################################################################################################
-
-
-
-
-
-
-
-
-
-
-#### calibración ##################### 
-
-
-# Cargar librerías necesarias
-library(readxl)
-library(dplyr)
-library(ggplot2)
-library(minpack.lm)
-
-# Paso 1: Cargar y Preparar los Datos
-file_path <- "C:/Users/DEES-JULIO/Desktop/GIZ/Anexo 1. Consolidado INGEI 2005-2020.xlsx"
-data <- read_excel(file_path, sheet = "Residuos") %>%
-  select(ANO, DDOC, E_IeIAD, E_EDS, E_TAR) %>%
-  filter(!is.na(DDOC))
-
-# Calcular las emisiones históricas totales
-data <- data %>%
-  mutate(Emisiones_Totales = E_IeIAD + E_EDS + E_TAR)
-
-# Paso 2: Ajuste de Parámetros y Proyección de Emisiones
+# Función para calcular k usando un modelo de ajuste
 calcular_k <- function(data) {
-  modelo <- nlsLM(DDOC ~ DDOC0 * exp(-k * (ANO - min(ANO))), data = data, start = list(DDOC0 = max(data$DDOC, na.rm = TRUE), k = 0.1))
-  return(abs(coef(modelo)["k"]))  # Tomar el valor absoluto de k
+  if (any(is.na(data$DDOC)) || any(is.infinite(data$DDOC))) {
+    stop("Datos contienen valores faltantes o infinitos.")
+  }
+  modelo <- nls(DDOC ~ DDOC0 * exp(-k * (ANO - min(ANO))), data = data, start = list(DDOC0 = max(data$DDOC, na.rm = TRUE), k = 0.1))
+  abs(coef(modelo)["k"])  # Tomar el valor absoluto de k
 }
 
-k_calculado <- calcular_k(data)
-DOC <- 75.92  # Ajuste de DOC basado en datos históricos
-DOC_ton <- DOC / 1000
-
-# Proyectar las trayectorias de emisiones usando el valor de k calculado
-years <- 2000:2020  # Utilizar solo años históricos para validación
-Waste_Deposited_Tons <- seq(500000, 600000, length.out = length(years))
-DOCf <- rep(DOC_ton, length(years))
-MCF <- runif(length(years), 0.8, 1.0)
-Recovered_CH4_Tons <- seq(1000, 3000, length.out = length(years))
-OX <- runif(length(years), 0.1, 0.25)
-
-DDOCmd <- Waste_Deposited_Tons * DOCf * MCF
-DDOCma <- numeric(length(years))
-DDOCmdecomp <- numeric(length(years))
-CH4_generated <- numeric(length(years))
-CH4_emitted <- numeric(length(years))
-
-for (i in 1:length(years)) {
-  if (i == 1) {
-    DDOCma[i] <- DDOCmd[i]
-    DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k_calculado * (years[i] - years[1])))
-  } else {
-    DDOCma[i] <- DDOCmd[i] + DDOCma[i - 1] * exp(-k_calculado * (years[i] - years[i - 1]))
-    DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k_calculado * (years[i] - years[i - 1]))) + DDOCma[i - 1] * (1 - exp(-k_calculado * (years[i] - years[i - 1])))
-  }
-  CH4_generated[i] <- DDOCmdecomp[i] * 16 / 12
-  CH4_emitted[i] <- (CH4_generated[i] - Recovered_CH4_Tons[i]) * (1 - OX[i])
-  if (CH4_emitted[i] < 0) {
-    CH4_emitted[i] <- 0
-  }
-}
-
-# Ajustar las emisiones para las nuevas tecnologías
-FBT <- 0.30
-EBT <- 0.30
-FI <- 0.10
-CO2I <- 2.0
-
-CH4_emitted_adjusted <- CH4_emitted * (1 - (FBT * EBT))
-fraction_solid_waste <- 0.09
-fraction_incineration <- 0.15
-fraction_wastewater <- 1 - (fraction_solid_waste + fraction_incineration)
-
-CO2_emissions_incineration <- Waste_Deposited_Tons * CO2I * fraction_incineration
-CH4e_total <- CH4_emitted_adjusted * fraction_wastewater + CH4_emitted_adjusted * fraction_solid_waste
-N2O_emission_factor_incineration <- 0.1
-N2O_emission_factor_wastewater <- 0.05
-
-N2O_emissions_incineration <- Waste_Deposited_Tons * N2O_emission_factor_incineration * fraction_incineration
-N2O_emissions_wastewater <- Waste_Deposited_Tons * N2O_emission_factor_wastewater * fraction_wastewater
-N2Oe_total <- N2O_emissions_incineration + N2O_emissions_wastewater
-
-BAU <- CH4_emitted_adjusted * fraction_solid_waste + CH4_emitted_adjusted * fraction_wastewater
-
-# Crear un dataframe con los resultados
-data_proyectada <- data.frame(
-  Year = years,
-  Emisiones_Proyectadas = CH4e_total + N2Oe_total + CO2_emissions_incineration,
-  Emisiones_Historicas = data$Emisiones_Totales
-)
-
-# Paso 3: Comparación y Ajuste Iterativo
-ggplot(data_proyectada, aes(x = Year)) +
-  geom_line(aes(y = Emisiones_Historicas, color = "Emisiones Históricas"), size = 1) +
-  geom_line(aes(y = Emisiones_Proyectadas, color = "Emisiones Proyectadas"), size = 1, linetype = "dashed") +
-  labs(title = "Comparación de Emisiones Históricas y Proyectadas",
-       x = "Año",
-       y = "Emisiones de CO2e (toneladas)",
-       color = "Tipo de Emisión") +
-  theme_minimal() +
-  scale_color_manual(values = c("Emisiones Históricas" = "red", 
-                                "Emisiones Proyectadas" = "blue"))
-
-# Calibrar el modelo ajustando los parámetros para minimizar las diferencias
-ajustar_modelo <- function(par, data) {
-  DOC <- par[1]
-  k <- par[2]
+# Función para calcular emisiones de la categoría 4A (Residuos sólidos en vertederos)
+calcular_emisiones_4A <- function(Waste_Deposited_Tons, DOC_ton, MCF, Recovered_CH4_Tons, OX, k_calculado) {
+  DDOCmd <- Waste_Deposited_Tons * DOC_ton * MCF
+  DDOCma <- numeric(length(Waste_Deposited_Tons))
+  DDOCmdecomp <- numeric(length(Waste_Deposited_Tons))
+  CH4_generated <- numeric(length(Waste_Deposited_Tons))
+  CH4_emitted <- numeric(length(Waste_Deposited_Tons))
   
-  DOC_ton <- DOC / 1000
-  DOCf <- rep(DOC_ton, length(years))
-  DDOCmd <- Waste_Deposited_Tons * DOCf * MCF
-  DDOCma <- numeric(length(years))
-  DDOCmdecomp <- numeric(length(years))
-  CH4_generated <- numeric(length(years))
-  CH4_emitted <- numeric(length(years))
-  
-  for (i in 1:length(years)) {
+  for (i in 1:length(Waste_Deposited_Tons)) {
     if (i == 1) {
       DDOCma[i] <- DDOCmd[i]
-      DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k * (years[i] - years[1])))
+      DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k_calculado * (i - 1)))
     } else {
-      DDOCma[i] <- DDOCmd[i] + DDOCma[i - 1] * exp(-k * (years[i] - years[i - 1]))
-      DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k * (years[i] - years[i - 1]))) + DDOCma[i - 1] * (1 - exp(-k * (years[i] - years[i - 1])))
+      DDOCma[i] <- DDOCmd[i] + DDOCma[i - 1] * exp(-k_calculado * (i - 1))
+      DDOCmdecomp[i] <- DDOCmd[i] * (1 - exp(-k_calculado * (i - 1))) + DDOCma[i - 1] * (1 - exp(-k_calculado * (i - 1)))
     }
-    CH4_generated[i] <- DDOCmdecomp[i] * 16 / 12
+    CH4_generated[i] <- DDOCmdecomp[i] * 16/12
     CH4_emitted[i] <- (CH4_generated[i] - Recovered_CH4_Tons[i]) * (1 - OX[i])
-    if (CH4_emitted[i] < 0) {
+    
+    # Manejar NA o valores negativos
+    if (is.na(CH4_emitted[i]) || CH4_emitted[i] < 0) {
       CH4_emitted[i] <- 0
     }
   }
   
-  CH4_emitted_adjusted <- CH4_emitted * (1 - (FBT * EBT))
-  CH4e_total <- CH4_emitted_adjusted * fraction_wastewater + CH4_emitted_adjusted * fraction_solid_waste
-  Emisiones_Proyectadas <- CH4e_total + N2Oe_total + CO2_emissions_incineration
-  
-  return(sum((data$Emisiones_Totales - Emisiones_Proyectadas)^2))
+  return(CH4_emitted)
 }
 
-# Optimizar los parámetros para minimizar las diferencias
-resultados_optimizacion <- optim(par = c(DOC, k_calculado), fn = ajustar_modelo, data = data, method = "BFGS")
-DOC_opt <- resultados_optimizacion$par[1]
-k_opt <- resultados_optimizacion$par[2]
+##############################################################################################################################
+############################################################################################################################
 
-# Generar proyecciones con los parámetros optimizados
-data_proyectada_opt <- data.frame(
+
+
+# Función para calcular emisiones de la categoría 4C2 (Incineración abierta)
+calcular_emisiones_4C2 <- function(Waste_Deposited_Tons, factor_emision_CO2, factor_emision_CH4, factor_emision_N2O) {
+  # Calcular emisiones de CO2, CH4 y N2O
+  CO2_emissions <- Waste_Deposited_Tons * factor_emision_CO2  # Factor de emisión aplicado a cada año
+  CH4_emissions <- Waste_Deposited_Tons * factor_emision_CH4  # Igual con CH4
+  N2O_emissions <- Waste_Deposited_Tons * factor_emision_N2O  # Igual con N2O
+  
+  # Convertir a CO2 equivalente usando GWP (Global Warming Potential)
+  total_emissions <- CO2_emissions + (CH4_emissions * 25) + (N2O_emissions * 298)  # GWP para CH4 y N2O
+  
+  # Devolver un único vector de emisiones
+  return(total_emissions)
+}
+
+
+
+
+
+
+
+# Función para calcular emisiones de la categoría 4D1 (Aguas residuales domésticas)
+calcular_emisiones_4D1 <- function(volumen_agua_residual, factor_emision_CH4, factor_emision_N2O) {
+  CH4_emissions <- volumen_agua_residual * factor_emision_CH4
+  N2O_emissions <- volumen_agua_residual * factor_emision_N2O
+  
+  # Convertir a CO2 equivalente
+  total_emissions <- (CH4_emissions * 25) + (N2O_emissions * 298)
+  return(total_emissions)
+}
+
+# Función para calcular emisiones de la categoría 4D2 (Aguas residuales industriales)
+calcular_emisiones_4D2 <- function(volumen_agua_residual, factor_emision_CH4, factor_emision_N2O) {
+  CH4_emissions <- volumen_agua_residual * factor_emision_CH4
+  N2O_emissions <- volumen_agua_residual * factor_emision_N2O
+  
+  # Convertir a CO2 equivalente
+  total_emissions <- (CH4_emissions * 25) + (N2O_emissions * 298)
+  return(total_emissions)
+}
+
+# Cargar los datos y parámetros desde el Excel
+vyp <- read_excel("C:/Users/DEES-JULIO/Desktop/GIZ/Residuos/datos relevantes.xlsx", sheet = "VyP_BAU")
+
+# Datos específicos para Honduras
+indice_generacion_rsu_dia <- vyp$VT1
+indice_generacion_rsu_anual <- indice_generacion_rsu_dia * 365  # Convertir a kg/hab/año
+fraccion_residuos_organicos <- vyp$VT2
+fraccion_residuos_vertederos <- vyp$VT3
+
+series<-read_excel("C:/Users/DEES-JULIO/Desktop/GIZ/Residuos/datos relevantes.xlsx", sheet = "Series")
+
+
+OX<-series$VT4
+MFC<-series$VT5
+
+# Calcular el DOC para Honduras
+DOC <- indice_generacion_rsu_anual * fraccion_residuos_organicos * fraccion_residuos_vertederos  # Carbono Orgánico Degradable
+DOC_ton <- DOC/1000
+
+# Parámetros iniciales
+P0 <- 6.75e6  # Población en el año 2000 (en millones)
+r <- vyp$VT4    # Tasa de crecimiento demográfico anual
+G <- indice_generacion_rsu_dia     # Generación de residuos per cápita (kg/hab/día)
+dias_anio <- 365  # Número de días en un año
+
+# Calcular residuos generados de 2000 a 2050
+years <- 2000:2050
+# Usar un loop o `sapply` correctamente para obtener un vector de resultados en lugar de una matriz.
+
+
+
+Waste_Deposited_Tons <- numeric(length(years))
+
+# Calcular los residuos generados en cada año usando un bucle
+for (i in 1:length(years)) {
+  Waste_Deposited_Tons[i] <- calcular_residuos(years[i], P0 = P0, r = r, G = G, dias_anio = dias_anio)
+}
+
+# Verificar la estructura del vector
+print(Waste_Deposited_Tons)
+str(Waste_Deposited_Tons)
+
+Recovered_CH4_Tons<-0.01*Waste_Deposited_Tons
+
+
+# Cargar datos históricos de DDOC y calcular k
+data <- read_excel("C:/Users/DEES-JULIO/Desktop/GIZ/Anexo 1. Consolidado INGEI 2005-2020.xlsx", sheet = "Residuos")
+data <- data %>% select(ANO, DDOC, E_IeIAD, E_EDS, E_TAR) %>% filter(!is.na(DDOC))
+k_calculado <- calcular_k(data)
+
+# Definir factores de emisión para incineración y aguas residuales
+factor_emision_CO2_incineracion <- 1.0  # t CO2/tonelada de residuos
+factor_emision_CH4_incineracion <- 0.000005  # t CH4/tonelada de residuos
+factor_emision_N2O_incineracion <- 0.00004  # t N2O/tonelada de residuos
+
+factor_emision_CH4_aguas_domesticas <- 0.0045  # t CH4/m³ de agua residual
+factor_emision_N2O_aguas_domesticas <- 0.000005  # t N2O/m³ de agua residual
+
+factor_emision_CH4_aguas_industriales <- 0.002  # t CH4/m³ de agua residual
+factor_emision_N2O_aguas_industriales <- 0.0003  # t N2O/m³ de agua residual
+
+# Volumen estimado de aguas residuales (deberías cargar estos datos desde tus archivos)
+
+# Cargar los datos y parámetros desde el Excel
+
+
+volumen_agua_residual_domestica <- series$VTC4
+volumen_agua_residual_industrial <- series$VTC4
+
+# Asumiendo que la fracción inicial es 10.9% para el año 2007
+fraccion_tratada_domesticas <- 0.109  # Puedes ajustar para otros países o para proyecciones futuras
+
+# Si tienes proyecciones de crecimiento de la fracción tratada, puedes crear una variable que varíe con los años.
+fraccion_tratada_domesticas_proyectada <- rep(fraccion_tratada_domesticas, length(years))
+
+# Aumentar la fracción tratada para reflejar metas de tratamiento en los años futuros
+for (i in 1:length(years)) {
+  if (years[i] > 2025) {
+    fraccion_tratada_domesticas_proyectada[i] <- fraccion_tratada_domesticas_proyectada[i - 1] + 0.005  # Incrementar lentamente
+  }
+}
+
+
+
+str(volumen_agua_residual_domestica)
+
+# Calcular las emisiones para cada categoría
+Emisiones_4A <- calcular_emisiones_4A(Waste_Deposited_Tons, DOC_ton, MCF, Recovered_CH4_Tons, OX, k_calculado) /2e3
+Emisiones_4C2 <- calcular_emisiones_4C2(Waste_Deposited_Tons, factor_emision_CO2_incineracion, factor_emision_CH4_incineracion, factor_emision_N2O_incineracion)/2e3
+Emisiones_4D1 <- calcular_emisiones_4D1(volumen_agua_residual_domestica, factor_emision_CH4_aguas_domesticas, factor_emision_N2O_aguas_domesticas)/2e3
+Emisiones_4D2 <- calcular_emisiones_4D2(volumen_agua_residual_industrial, factor_emision_CH4_aguas_industriales, factor_emision_N2O_aguas_industriales)/2e3
+
+# Crear un dataframe con los resultados
+data_proyectada <- data.frame(
   Year = years,
-  Emisiones_Proyectadas = NA,
-  Emisiones_Historicas = data$Emisiones_Totales
+  Eliminación_desechos_sólidos = Emisiones_4A,
+  Incineración_abierta_de_desechos = Emisiones_4C2,
+  Aguas_residuales_domésticas = Emisiones_4D1,
+  Aguas_residuales_industriales = Emisiones_4D2,
+  volumen_agua_residual_domestica=volumen_agua_residual_domestica,
+  volumen_agua_residual_domestica=volumen_agua_residual_domestica,
+  Recovered_CH4_Tons=Recovered_CH4_Tons,
+  Waste_Deposited_Tons=Waste_Deposited_Tons
 )
 
-DOC_ton_opt <- DOC_opt / 1000
-DOCf_opt <- rep(DOC_ton_opt, length(years))
-DDOCmd_opt <- Waste_Deposited_Tons * DOCf_opt * MCF
-DDOCma_opt <- numeric(length(years))
-DDOCmdecomp_opt <- numeric(length(years))
-CH4_generated_opt <- numeric(length(years))
-CH4_emitted_opt <- numeric(length(years))
 
-for (i in 1:length(years)) {
-  if (i == 1) {
-    DDOCma_opt[i] <- DDOCmd_opt[i]
-    DDOCmdecomp_opt[i] <- DDOCmd_opt[i] * (1 - exp(-k_opt * (years[i] - years[1])))
-  } else {
-    DDOCma_opt[i] <- DDOCmd_opt[i] + DDOCma_opt[i - 1] * exp(-k_opt * (years[i] - years[i - 1]))
-    DDOCmdecomp_opt[i] <- DDOCmd_opt[i] * (1 - exp(-k_opt * (years[i] - years[i - 1]))) + DDOCma_opt[i - 1] * (1 - exp(-k_opt * (years[i] - years[i - 1])))
-  }
-  CH4_generated_opt[i] <- DDOCmdecomp_opt[i] * 16 / 12
-  CH4_emitted_opt[i] <- (CH4_generated_opt[i] - Recovered_CH4_Tons[i]) * (1 - OX[i])
-  if (CH4_emitted_opt[i] < 0) {
-    CH4_emitted_opt[i] <- 0
-  }
-}
 
-CH4_emitted_adjusted_opt <- CH4_emitted_opt * (1 - (FBT * EBT))
-CH4e_total_opt <- CH4_emitted_adjusted_opt * fraction_wastewater + CH4_emitted_adjusted_opt * fraction_solid_waste
-Emisiones_Proyectadas_opt <- CH4e_total_opt + N2Oe_total + CO2_emissions_incineration
+años_especificos <- c(2018, 2020, 2022, 2025, 2030, 2035, 2040,2045,2050)
+data_proyectada <- data_proyectada %>%
+  filter(Year %in% años_especificos)
 
-data_proyectada_opt$Emisiones_Proyectadas <- Emisiones_Proyectadas_opt
+# Visualización de los resultados en una gráfica apilada
+data_long <- data_proyectada %>%
+  pivot_longer(cols = -Year, names_to = "Categoria", values_to = "Emisiones")
 
-# Visualizar resultados optimizados
-ggplot(data_proyectada_opt, aes(x = Year)) +
-  geom_line(aes(y = Emisiones_Historicas, color = "Emisiones Históricas"), size = 1) +
-  geom_line(aes(y = Emisiones_Proyectadas, color = "Emisiones Proyectadas"), size = 1, linetype = "dashed") +
-  labs(title = "Comparación de Emisiones Históricas y Proyectadas (Optimizado)",
-       x = "Año",
-       y = "Emisiones de CO2e (toneladas)",
-       color = "Tipo de Emisión") +
+ggplot(data_long, aes(x = factor(Year), y = Emisiones, fill = Categoria)) +
+  geom_bar(stat = "identity", color = "black", size = 0.3) +  # Barras apiladas con bordes
+  geom_text(aes(label = round(Emisiones, 2)), 
+            position = position_stack(vjust = 0.5), 
+            size = 3, color = "black") +  # Etiquetas en el centro de las barras
+  scale_fill_manual(values = c(
+    "Eliminación_desechos_sólidos" = "orange",
+    "Incineración_abierta_de_desechos" = "yellow",
+    "Aguas_residuales_domésticas" = "blue",
+    "Aguas_residuales_industriales" = "gray"
+  )) +
+  labs(
+    title = "",
+    x = "Año",
+    y = "Emisiones Totales (Gg CO2e)",
+    fill = "Categoría"
+  ) +
   theme_minimal() +
-  scale_color_manual(values = c("Emisiones Históricas" = "red", 
-                                "Emisiones Proyectadas" = "blue"))
+  theme(legend.position = "bottom")  # Posicionar la leyenda abajo
+
+# Guardar los resultados en un archivo Excel
+write.xlsx(data_proyectada, "C:/Users/DEES-JULIO/Desktop/GIZ/Residuos/Proyecciones_Emisiones_Categorias.xlsx", row.names = FALSE)
+
